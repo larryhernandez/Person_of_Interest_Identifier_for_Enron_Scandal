@@ -6,12 +6,13 @@ sys.path.append("../tools/")
 
 from feature_format import featureFormat, targetFeatureSplit
 from tester import dump_classifier_and_data
+from poi_helper_methods import *
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
@@ -20,146 +21,6 @@ from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedShuffleSplit, cross_val_score
-#from sklearn.naive_bayes import GaussianNB
-
-#############################################################################
-###################     Define some useful functions        #################
-#############################################################################
-
-### To assist with visualizations
-
-# This code for plotting the bar chart is borrowed and adapted directly from:
-# http://matplotlib.org/examples/api/barchart_demo.html    
-
-
-def print_underscore(n = 80):
-    print "_" * n
-
-def autolabel(rects):
-    """
-    Attach a text label above each bar displaying its height
-    """
-    for rect in rects:
-        height = rect.get_height()
-        ax.text(rect.get_x() + rect.get_width()/2., height,
-                '%d' % int(height),
-                ha='center', va='bottom')
-
-
-def hist_and_summary(df, column, scale = 1, xlab ='', ylab = '', col = 'blue'):
-    """
-    Given a pandas dataframe and column names, prints summary statistics for 
-    that column and produces a histogram.
-    """
-    # Summary Statistics
-    print df[column].describe()
-    
-    # Histogram
-    plt.hist(df[column][np.isfinite(df[column])] / scale, 
-             bins = 50, color = col)
-    plt.xlabel(xlab)
-    plt.ylabel(ylab)
-    plt.show()
-
-
-def summarize_records(dataframe):
-    '''
-    Given a dataframe (of enron employee data) prints the number of POIs, 
-    non-POIs, number of columns, and total number of records.
-    '''
-    num_records, num_features = dataframe.shape
-    num_poi = dataframe['poi'].sum()
-    num_non_poi = df.poi.value_counts()[False]
-    print "\tTotal number of records: " + str(num_records)
-    print "\tTotal number of features: " + str(num_features)
-    print "\tNumber of POIs: " + str(num_poi)
-    print "\tNumber of non POIs: " + str(num_non_poi)
-    return num_records, num_features, num_poi, num_non_poi
-
-##### Functions to assist with eliminating or re-arranging columns
-
-def columns_with_more_than_x_NaN_vals(dataframe, x = 100):
-    identified_columns = []
-    for name in dataframe.columns.tolist():
-        if dataframe.loc[0][name] >= x:
-            identified_columns.append(name)
-    return identified_columns
-
-##### Functions to assist with Feature Creation
-
-# This function was borrowed from the Udacity video lecture entitled 
-# "Quiz: Visualizing Your New Feature"
-def computeFraction( poi_messages, all_messages ):
-    '''
-    Given a number messages to/from POI (numerator) and number of all messages 
-    to/from a person (denominator), return the fraction of messages to/from 
-    that person that are from/to a POI
-    '''
-    ### beware of "NaN" when there is no known email address (and so
-    ### no filled email features), and integer division!
-    ### in case of poi_messages or all_messages having "NaN" value, return 0.
-    fraction = 0.
-    if (poi_messages != "NaN" or poi_messages != np.nan) and (all_messages != "NaN" or all_messages!= np.nan):
-        if (np.isnan(poi_messages) or poi_messages == 0.0) or (np.isnan(all_messages) or all_messages == 0.):
-            fraction = 0.            
-        else:
-            fraction = poi_messages / float(all_messages)  
-    return fraction
-
-
-def fraction_email_from_poi(row):
-    '''
-    Calculates the fraction of emails that a given person (i.e. row) receives
-    from POIs
-    '''
-    return computeFraction(row['from_poi_to_this_person'], row['to_messages'])
-
-
-def fraction_email_to_poi(row):
-    '''
-    Calculates the fraction of emails that a given person (i.e. row) sends
-    to POIs
-    '''
-    return computeFraction(row['from_this_person_to_poi'], 
-                           row['from_messages'])
-
-
-def reciprocating_email_to_poi(row):
-    '''
-    Calculates the ratio where the numerator is "number of emails that a person 
-    sends to POIs" and the denominator is "number of emails that a person 
-    receives from POIs"
-    '''
-    return computeFraction(row['from_this_person_to_poi'], 
-                           row['from_poi_to_this_person'])
-
-
-#### To assist with Feature Selection
-def insert_principal_components(dataframe, C):
-    '''
-    Given a dataframe containing columns that were used for PCA, and the 
-    resultant principal components stored in 'C', this function inserts each 
-    principal component as a column in dataframe.
-    '''
-    [num_samples, num_components] = C.shape
-    for comp in range(0,num_components):
-        col_name = 'PC_' + str(comp+1)
-        df.insert(comp, 
-                  column = col_name, 
-                  value = C[:,comp], 
-                  allow_duplicates = False)
-
-
-def get_complement_list(first, second):
-    '''
-    Given two lists, denoted first and second, returns a list of items which
-    are contained in first but not contained in second.
-    '''
-    return list(set(first) - set(second))
-
-###
-### End of useful functions section
-###
 
 ##############################################################################
 ################### Task 1: Select what features you'll use. #################
@@ -179,35 +40,28 @@ email_feature_names = ['to_messages', 'from_poi_to_this_person',
                        'from_messages', 'from_this_person_to_poi', 
                        'shared_receipt_with_poi']
 
+# Define the target variable (useful for data cleansing)
+target = 'poi'
+
 # Select other control parameters for data processing, including: 
 # feature scaling, feature selection & dimensionalit reduction, and model
 # selection
 required_financial_features = ['salary']
-exclude_email_features = 0          # 0: utilize email features for modeling
-                                    # 1: do not utilize email features
 
-# Use StandardScaler
-log_transform = 1
-use_standard_scaler = 0
+##### Feature Scaling 
+log_transform_all_features = 1
+minmaxscale_email_features = 0
+minmaxscale_financial_features = 0
 
-# Use MinMaxScaler for Feature Scaling
-scale_email_features = 0            # irrelevant if exclude_email_features = 1
-scale_financial_features = 0
+##### Feature Creation and Selection
+# Feature Selction for Email Data
+n_email_features_to_select = 1
+create_new_email_features = 1   # irrelevant if n_email_features_to_select = 0
+do_select_kbest_on_emails = 1   # irrelevant if n_email_features_to_select = 0
 
-# Feature Selection
-create_new_email_features = 1       # irrelevant if exclude_email_features = 1
-feature_select_emails = 1           # irrelevant if exclude_email_features = 1
-n_email_features_to_select = 1      # irrelevant if exclude_email_features = 1
-feature_select_finance = 1
+# Feature Selection for Financial Data
+do_pca_on_finance = 1
 n_finance_features_to_select = 3
-
-# Define the target variable (useful for data cleansing)
-target = 'poi'
-
-# Control Variables for SelectKBest() and PCA()
-#FEATURE_SELECTION_FN = [f_classif, chi2]
-#N_FEATURES_OPTIONS = [2,3]
-#N_PCA_COMPONENTS = [2,3,4]
 
 ##############################################################################
 ##############################################################################
@@ -249,7 +103,7 @@ print nan_counts
 
 # Store the names of features which are mostly 'NaN'
 columns_with_too_many_NaN = columns_with_more_than_x_NaN_vals(nan_counts, 
-                                                          x = 90)
+                                                              x = 90)
 
 # Count the number of records missing relevant financial data. Since data 
 # set is small and most Non-POIs lack financial information we should eliminate 
@@ -284,8 +138,8 @@ ax.set_ylabel('Count')
 ax.set_title('Number of POIs and non-POIs')
 ax.set_xticks([])
 ax.legend((rect2[0], rect1[0]), ('Non-POIs','POIs'))
-autolabel(rect1)
-autolabel(rect2)
+autolabel(rect1,ax)
+autolabel(rect2,ax)
 plt.show()
 
 #### Summary Statistics and Histogram of Bonus
@@ -404,14 +258,9 @@ financial_feature_names = get_complement_list(financial_feature_names,
 df.fillna(value = 0, inplace = True)
 
 # Logarithmic transformation of finance & email features
-if log_transform:
+if log_transform_all_features:
     df[financial_feature_names]= np.log(1 + df[financial_feature_names])
     df[email_feature_names]= np.log(1 + df[email_feature_names])
-
-if use_standard_scaler:
-    std_scaler = StandardScaler()
-    std_scaler.fit_transform(df[financial_feature_names])
-    std_scaler.fit_transform(df[email_feature_names])
 
 # Visualize some of the remaining features
 print "\nHistograms after transformation \n"
@@ -432,32 +281,35 @@ hist_and_summary(df, 'ratio_reciprocating_email_to_poi', col = 'red')
 hist_and_summary(df, 'fraction_email_to_poi', col = 'green')
 hist_and_summary(df, 'fraction_email_from_poi', col = 'orange')
 
-# Feature Scaling
-if scale_email_features or scale_financial_features:
+# Generate instance of MinMaxScaler
+if minmaxscale_email_features or minmaxscale_financial_features:
     scaler = MinMaxScaler()
 
-if exclude_email_features:
+# MinMaxScaler for email features
+if (n_email_features_to_select == 0):
     df.drop(email_feature_names, axis = 1 , inplace = True)
 else:
-    if scale_email_features:
+    if minmaxscale_email_features:
         print "Scaling Email Features with MinMaxScaler"
         X_email = scaler.fit_transform(df[email_feature_names])
         df[email_feature_names] = X_email
     else:
         X_email = df[email_feature_names]
-    
-if scale_financial_features:
+
+# MinMaxScaler for financial features    
+if minmaxscale_financial_features:
     print "Scaling financial features with MinMaxScaler"
     X_fin = scaler.fit_transform(df[financial_feature_names])
     df[financial_feature_names] = X_fin
 else:
     X_fin = df[financial_feature_names]
 
+
 ## Feature Selection
 print "Performing Feature Selection"
 
 ## [1] Email Features: Use SelectKBest()
-if (not exclude_email_features) and feature_select_emails:
+if ((n_email_features_to_select >= 1) and do_select_kbest_on_emails):
     kbest = SelectKBest(chi2, k = n_email_features_to_select)
     y_email = df[target]
     X_email_kbest = kbest.fit_transform(X_email,y_email)
@@ -475,7 +327,7 @@ if (not exclude_email_features) and feature_select_emails:
     df.drop(email_features_to_drop, axis = 1, inplace = True)
 
 ## [2] Financial features: Apply PCA
-if feature_select_finance:
+if do_pca_on_finance:
     pca = PCA(n_components = n_finance_features_to_select)
     pca.fit(X_fin)
     print pca.explained_variance_ratio_
@@ -530,20 +382,38 @@ print "Creating Pipeline for Support Vector Classification"
 pipe_svc = Pipeline([
                     ('classify', SVC(C = 1.0, 
                                      kernel = 'rbf',
-                                     class_weight = 'balanced',                
+                                     class_weight = 'balanced',
                                      random_state = seed))
                 ])
 
-C_SVC = [2**-1,2**0,2**1,2**2,2**3]
-GAMMA_SVC = [2**-2,1,2**2]
-#C_SVC = [8]
-#GAMMA_SVC = [0.25]
+#C_SVC = [2**-3,2**-1,2**0,2**1,2**3]
+#GAMMA_SVC = [2**-3,2**-1,1,2**1,2**3]
+
+#C_SVC = [2**-1,1,2,4,8]
+#GAMMA_SVC = [2**-3,2**-2,2**-1,2**0,2**1]
+
+#C_SVC = [1,2,5,8,10]
+#GAMMA_SVC = [0.125,0.25,0.375,0.50,0.625,0.75]
+
+#C_SVC = [5,6,7,8]
+#GAMMA_SVC = [0.25,0.375]
+
+#C_SVC = [5]
+#GAMMA_SVC = [0.25,0.375]
+
+#C_SVC = [5]
+#GAMMA_SVC = [0.375]
+
+C_SVC = [8]
+GAMMA_SVC = [0.25]
+
 param_grid_svc =   [
         {
             'classify__C': C_SVC,
             'classify__gamma': GAMMA_SVC,
         }
                 ]
+
 ############### Create Pipeline and GridSearch for Decision Tree
 print "Creating Pipeline for Decision Tree"
 pipe_dt = Pipeline([
@@ -555,18 +425,12 @@ pipe_dt = Pipeline([
 CRITERION = ['gini','entropy']
 SPLITTER = ['best', 'random']
 MAX_FEATURES = ['sqrt','log2',1.0]
-#MIN_SAMPLES_SPLIT = [2,4,6]
-#MIN_SAMPLES_LEAF = [1,3]
-#MAX_DEPTH = [None, 2,4,6]
 
 param_grid_dt =   [
         {
             'classify__criterion': CRITERION,
-#            'classify__splitter': SPLITTER,
-#            'classify__max_features': MAX_FEATURES,
-#            'classify__max_depth': MAX_DEPTH,
-#            'classify__min_samples_split': MIN_SAMPLES_SPLIT,
-#            'classify__min_samples_leaf': MIN_SAMPLES_LEAF
+            'classify__splitter': SPLITTER,
+            'classify__max_features': MAX_FEATURES
         }
                 ]
 
@@ -577,14 +441,14 @@ pipe_rf = Pipeline([
                                                        random_state = seed))
                 ])
 
-N_ESTIMATORS_OPTIONS = [10]
+N_ESTIMATORS_OPTIONS = [6,10]
 RF_MAX_FEATURES = ['log2', 'sqrt']
 
 param_grid_rf =   [
         {
             'classify__n_estimators': N_ESTIMATORS_OPTIONS,
-            'classify__max_features': RF_MAX_FEATURES,
-            'classify__criterion': CRITERION
+            'classify__criterion': CRITERION,            
+            'classify__max_features': RF_MAX_FEATURES
         }
                   ]
 ############### Use Nested Cross-Validation to optimize hyperparameters and 
@@ -605,12 +469,12 @@ for trial in range(NUM_TRIALS):
     ####
     #### Random Forest Classifer
     ####
-    grid_rf = GridSearchCV(pipe_rf, cv = inner_cv, scoring = grid_scoring,
-                           param_grid = param_grid_rf)
-    grid_rf.fit(features, labels)
-    nested_score_rf = cross_val_score(grid_rf, X = features, y = labels, 
-                                      cv = outer_cv)
-    cv_scores_rf[trial] = nested_score_rf.mean()
+#    grid_rf = GridSearchCV(pipe_rf, cv = inner_cv, scoring = grid_scoring,
+#                           param_grid = param_grid_rf)
+#    grid_rf.fit(features, labels)
+#    nested_score_rf = cross_val_score(grid_rf, X = features, y = labels, 
+#                                      cv = outer_cv)
+#    cv_scores_rf[trial] = nested_score_rf.mean()
    
     ####
     #### Support Vector Classifer
@@ -625,12 +489,12 @@ for trial in range(NUM_TRIALS):
     ####
     #### Decision Tree Classifer
     ####
-    grid_dt = GridSearchCV(pipe_dt, cv = inner_cv, scoring = grid_scoring,
-                           param_grid = param_grid_dt)
-    grid_dt.fit(features,labels)
-    nested_score_dt = cross_val_score(grid_dt, X=features, y = labels,
-                                      cv = outer_cv, scoring = grid_scoring)
-    cv_scores_dt[trial] = nested_score_dt.mean()
+#    grid_dt = GridSearchCV(pipe_dt, cv = inner_cv, scoring = grid_scoring,
+#                           param_grid = param_grid_dt)
+#    grid_dt.fit(features,labels)
+#    nested_score_dt = cross_val_score(grid_dt, X=features, y = labels,
+#                                      cv = outer_cv, scoring = grid_scoring)
+#    cv_scores_dt[trial] = nested_score_dt.mean()
 
 print "Estimated f1_micro scores"
 print "\tRandom Forest:", cv_scores_rf
@@ -669,5 +533,6 @@ plt.show()
 ### check your results. You do not need to change anything below, but make sure
 ### that the version of poi_id.py that you submit can be run on its own and
 ### generates the necessary .pkl files for validating your results.
-clf = grid_svc.best_estimator_
-dump_classifier_and_data(clf, my_dataset, features_list)
+
+#clf = grid_svc.best_estimator_
+#dump_classifier_and_data(clf, my_dataset, features_list)
